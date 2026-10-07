@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+
+# Build outputs
+build/
+DerivedData/
+*.dSYM/
+*.o
+*.dylib
+*.app
+
+# Logs & temp
+*.log
+.build/
