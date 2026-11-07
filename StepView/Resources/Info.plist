@@ -23,7 +23,7 @@
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>LSMinimumSystemVersion</key>
-    <string>12.0</string>
+    <string>26.0</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
     <key>CFBundleDocumentTypes</key>
@@ -37,16 +37,16 @@
             <string>Default</string>
             <key>LSItemContentTypes</key>
             <array>
+                <string>com.stepview.step</string>
                 <string>public.step-3d</string>
-                <string>public.step</string>
             </array>
         </dict>
     </array>
-    <key>UTImportedTypeDeclarations</key>
+    <key>UTExportedTypeDeclarations</key>
     <array>
         <dict>
             <key>UTTypeIdentifier</key>
-            <string>public.step-3d</string>
+            <string>com.stepview.step</string>
             <key>UTTypeDescription</key>
             <string>STEP 3D CAD Model</string>
             <key>UTTypeConformsTo</key>

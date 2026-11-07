@@ -9,6 +9,10 @@ public final class PreviewViewController: NSViewController, QLPreviewingControll
     private var cadView: CADSceneView!
     private var progressIndicator: NSProgressIndicator!
     private var errorLabel: NSTextField!
+    // Garde-fous Quick Look (budget mémoire/temps serré de l'extension)
+    private static let maxFileSize: Int64 = 150 * 1024 * 1024   // 150 Mo
+    private static let maxTriangles: UInt = 2_000_000           // ~100 Mo de buffers CPU, reste fluide dans SceneKit
+    private static let relativeDeflection = -0.005              // 0.5% de la diagonale (app : 0.2%) : ~2x moins de triangles
     private let loadingQueue = DispatchQueue(label: "com.stepview.tessellation", qos: .userInitiated)
 
     public override func loadView() {
@@ -52,6 +56,18 @@ public final class PreviewViewController: NSViewController, QLPreviewingControll
 
     @objc
     public func preparePreviewOfFile(at url: URL, completionHandler handler: @escaping (Error?) -> Void) {
+        if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, Int64(size) > Self.maxFileSize {
+            let message = "Fichier trop volumineux pour l'aperçu rapide (\(size / 1_048_576) Mo, limite \(Self.maxFileSize / 1_048_576) Mo). Ouvrez-le dans StepView."
+            let error = NSError(domain: "com.stepview.error", code: 1008,
+                                userInfo: [NSLocalizedDescriptionKey: message])
+            DispatchQueue.main.async {
+                self.progressIndicator.isHidden = true
+                self.showError(message)
+                handler(error)
+            }
+            return
+        }
+
         progressIndicator.startAnimation(nil)
         progressIndicator.isHidden = false
         errorLabel.isHidden = true
@@ -60,8 +76,10 @@ public final class PreviewViewController: NSViewController, QLPreviewingControll
             guard let self = self else { return }
 
             do {
-                // linearDeflection <= 0.0 déclenche le calcul adaptatif automatique
-                let meshData = try CADMeshBridge.loadStepMesh(from: url, linearDeflection: 0.0)
+                // Déflexion négative = fraction de la diagonale ; plafond de triangles (erreur 1006 au-delà)
+                let meshData = try CADMeshBridge.loadStepMesh(from: url,
+                                                              linearDeflection: Self.relativeDeflection,
+                                                              maxTriangles: Self.maxTriangles)
 
                 DispatchQueue.main.async {
                     self.progressIndicator.stopAnimation(nil)

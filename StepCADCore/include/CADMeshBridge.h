@@ -32,6 +32,14 @@ NS_ASSUME_NONNULL_BEGIN
                             linearDeflection:(double)linearDeflection
                                        error:(NSError * _Nullable * _Nullable)outError;
 
+/// Variante avec garde-fous (Quick Look). linearDeflection : > 0 absolue, 0 = adaptative (0.2% de la diagonale),
+/// < 0 = fraction de la diagonale (ex. -0.005 = 0.5%). maxTriangles : 0 = illimité ; au-delà, erreur 1006.
+/// Erreur 1007 si le nombre de sommets dépasse la capacité des indices 32 bits.
++ (nullable CADMeshData *)loadStepMeshFromURL:(NSURL *)fileURL
+                            linearDeflection:(double)linearDeflection
+                                maxTriangles:(NSUInteger)maxTriangles
+                                       error:(NSError * _Nullable * _Nullable)outError;
+
 @end
 
 NS_ASSUME_NONNULL_END

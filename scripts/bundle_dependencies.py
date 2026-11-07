@@ -3,24 +3,31 @@ import os
 import sys
 import shutil
 import subprocess
-import glob
+import re
 
-def bundle_dependencies(target_dir):
+def brew_prefix(formula=None):
+    cmd = ["brew", "--prefix"] + ([formula] if formula else [])
+    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.strip()
+
+def bundle_dependencies(target_dir, occt_prefix):
     os.makedirs(target_dir, exist_ok=True)
+    # Préfixe Homebrew (/opt/homebrew sur Apple Silicon, /usr/local sur Intel)
+    hb_prefix = brew_prefix().rstrip("/") + "/"
+    occt_lib = os.path.join(occt_prefix, "lib")
 
     seeds = [
-        "/opt/homebrew/opt/opencascade/lib/libTKDESTEP.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKXSBase.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKMesh.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKTopAlgo.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKGeomAlgo.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKBRep.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKGeomBase.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKG3d.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKG2d.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKMath.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKernel.dylib",
-        "/opt/homebrew/opt/opencascade/lib/libTKPrim.dylib",
+        occt_lib + "/libTKDESTEP.dylib",
+        occt_lib + "/libTKXSBase.dylib",
+        occt_lib + "/libTKMesh.dylib",
+        occt_lib + "/libTKTopAlgo.dylib",
+        occt_lib + "/libTKGeomAlgo.dylib",
+        occt_lib + "/libTKBRep.dylib",
+        occt_lib + "/libTKGeomBase.dylib",
+        occt_lib + "/libTKG3d.dylib",
+        occt_lib + "/libTKG2d.dylib",
+        occt_lib + "/libTKMath.dylib",
+        occt_lib + "/libTKernel.dylib",
+        occt_lib + "/libTKPrim.dylib",
     ]
 
     queue = [os.path.realpath(p) for p in seeds]
@@ -37,10 +44,10 @@ def bundle_dependencies(target_dir):
             dep = line.split(" (compatibility")[0].strip()
             if dep.startswith("@rpath/"):
                 dep_name = dep.replace("@rpath/", "")
-                candidate = os.path.realpath(f"/opt/homebrew/opt/opencascade/lib/{dep_name}")
+                candidate = os.path.realpath(os.path.join(occt_lib, dep_name))
                 if os.path.exists(candidate) and candidate not in all_needed:
                     queue.append(candidate)
-            elif dep.startswith("/opt/homebrew/"):
+            elif dep.startswith(hb_prefix):
                 candidate = os.path.realpath(dep)
                 if os.path.exists(candidate) and candidate not in all_needed:
                     queue.append(candidate)
@@ -55,16 +62,16 @@ def bundle_dependencies(target_dir):
         copied[p] = base
 
     print("[2/4] Création des liens symboliques de compatibilité...")
-    files = glob.glob(os.path.join(target_dir, "*.7.9.3.dylib"))
-    for f in files:
-        base = os.path.basename(f)
-        dirn = os.path.dirname(f)
-        v79 = base.replace(".7.9.3.dylib", ".7.9.dylib")
-        v = base.replace(".7.9.3.dylib", ".dylib")
-        for sym in [v79, v]:
-            target_sym = os.path.join(dirn, sym)
-            if not os.path.exists(target_sym):
-                os.symlink(base, target_sym)
+    # Pour tout libX.A.B.C.dylib : créer libX.A.B.dylib et libX.dylib
+    for f in os.listdir(target_dir):
+        m = re.fullmatch(r"(lib.+?)\.(\d+)\.(\d+)\.(\d+)\.dylib", f)
+        if not m or os.path.islink(os.path.join(target_dir, f)):
+            continue
+        name, a, b, _ = m.groups()
+        for sym in [f"{name}.{a}.{b}.dylib", f"{name}.dylib"]:
+            target_sym = os.path.join(target_dir, sym)
+            if not os.path.lexists(target_sym):
+                os.symlink(f, target_sym)
 
     print("[3/4] Réécriture des chemins LC_ID_DYLIB et dépendances @rpath...")
     for p, base in copied.items():
@@ -76,7 +83,7 @@ def bundle_dependencies(target_dir):
         res = subprocess.run(["otool", "-L", target], capture_output=True, text=True)
         for line in res.stdout.splitlines()[1:]:
             dep = line.strip().split(" (compatibility")[0].strip()
-            if dep.startswith("/opt/homebrew/"):
+            if dep.startswith(hb_prefix):
                 dep_real = os.path.realpath(dep)
                 if dep_real in copied:
                     new_dep = f"@rpath/{copied[dep_real]}"
@@ -99,6 +106,8 @@ def bundle_dependencies(target_dir):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: bundle_dependencies.py <target_frameworks_dir>")
+        print("Usage: bundle_dependencies.py <target_frameworks_dir> [occt_prefix]")
         sys.exit(1)
-    bundle_dependencies(sys.argv[1])
+    # Préfixe OCCT : 2e argument, sinon variable OCCT_PREFIX, sinon brew --prefix opencascade
+    prefix = (sys.argv[2] if len(sys.argv) > 2 else os.environ.get("OCCT_PREFIX")) or brew_prefix("opencascade")
+    bundle_dependencies(sys.argv[1], prefix)
