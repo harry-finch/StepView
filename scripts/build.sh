@@ -2,7 +2,16 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="${PROJECT_DIR}/build"
+BUILD_DIR="${BUILD_DIR:-${PROJECT_DIR}/build}"
+
+# Préfixe Open CASCADE (Homebrew par défaut) transmis au script de bundling
+export OCCT_PREFIX="${OCCT_PREFIX:-$(brew --prefix opencascade)}"
+
+# Cible : architecture de la machine + déploiement minimal macOS.
+# 26.0 = minos des dylibs Homebrew (otool -l | grep -A3 LC_BUILD_VERSION) ; une cible
+# plus basse produirait des avertissements d'éditeur de liens et un bundle non fonctionnel.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-26.0}"
+TARGET="$(uname -m)-apple-macos${MACOSX_DEPLOYMENT_TARGET}"
 APP_DIR="${BUILD_DIR}/StepView.app"
 CONTENTS_DIR="${APP_DIR}/Contents"
 FRAMEWORKS_DIR="${CONTENTS_DIR}/Frameworks"
@@ -27,7 +36,7 @@ mkdir -p "${QL_CONTENTS_DIR}/Resources"
 
 # 2. Copie et relocalisation des dylibs OCCT
 echo "[2/6] Intégration autonome des bibliothèques Open CASCADE..."
-python3 "${PROJECT_DIR}/scripts/bundle_dependencies.py" "${FRAMEWORKS_DIR}"
+python3 "${PROJECT_DIR}/scripts/bundle_dependencies.py" "${FRAMEWORKS_DIR}" "${OCCT_PREFIX}"
 
 # 3. Compilation de StepCADCore.framework
 echo "[3/6] Compilation de StepCADCore.framework (Objective-C++ / OCCT Bridge)..."
@@ -49,13 +58,14 @@ ln -sf Versions/Current/Resources "${FW_DIR}/Resources"
 ln -sf Versions/Current/StepCADCore "${FW_DIR}/StepCADCore"
 
 clang++ -dynamiclib -std=c++17 -fobjc-arc -O2 \
-  -I/opt/homebrew/opt/opencascade/include/opencascade \
+  -mmacosx-version-min="${MACOSX_DEPLOYMENT_TARGET}" \
+  -I"${OCCT_PREFIX}/include/opencascade" \
   -I"${PROJECT_DIR}/StepCADCore/include" \
   -L"${FRAMEWORKS_DIR}" \
   -Wl,-rpath,@loader_path/. \
-  -lTKDESTEP.7.9.3 -lTKXSBase.7.9.3 -lTKMesh.7.9.3 -lTKTopAlgo.7.9.3 -lTKGeomAlgo.7.9.3 \
-  -lTKBRep.7.9.3 -lTKGeomBase.7.9.3 -lTKG3d.7.9.3 -lTKG2d.7.9.3 -lTKMath.7.9.3 \
-  -lTKernel.7.9.3 -lTKPrim.7.9.3 \
+  -lTKDESTEP -lTKXSBase -lTKMesh -lTKTopAlgo -lTKGeomAlgo \
+  -lTKBRep -lTKGeomBase -lTKG3d -lTKG2d -lTKMath \
+  -lTKernel -lTKPrim \
   -install_name @rpath/StepCADCore.framework/Versions/A/StepCADCore \
   -framework Foundation -framework CoreGraphics \
   "${PROJECT_DIR}/StepCADCore/src/CADMeshBridge.mm" \
@@ -66,8 +76,9 @@ codesign --force --sign - "${FW_DIR}"
 # 4. Compilation de l'extension Quick Look (StepViewQL.appex)
 echo "[4/6] Compilation de l'extension Quick Look StepViewQL.appex..."
 cp "${PROJECT_DIR}/StepViewQL/Resources/Info.plist" "${QL_CONTENTS_DIR}/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion ${MACOSX_DEPLOYMENT_TARGET}" "${QL_CONTENTS_DIR}/Info.plist"
 
-swiftc -O -target arm64-apple-macos12.0 \
+swiftc -O -target "${TARGET}" \
   -F "${FRAMEWORKS_DIR}" \
   -I "${FW_DIR}/Headers" \
   -Xlinker -rpath -Xlinker @executable_path/../../../../Frameworks \
@@ -84,13 +95,14 @@ codesign --force --sign - --entitlements "${PROJECT_DIR}/StepViewQL/Resources/St
 # 5. Compilation de l'application hôte StepView.app
 echo "[5/6] Compilation de l'application conteneur StepView.app..."
 cp "${PROJECT_DIR}/StepView/Resources/Info.plist" "${CONTENTS_DIR}/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :LSMinimumSystemVersion ${MACOSX_DEPLOYMENT_TARGET}" "${CONTENTS_DIR}/Info.plist"
 echo -n "APPL????" > "${CONTENTS_DIR}/PkgInfo"
 mkdir -p "${CONTENTS_DIR}/Resources"
 if [ -f "${PROJECT_DIR}/StepView/Resources/AppIcon.icns" ]; then
     cp "${PROJECT_DIR}/StepView/Resources/AppIcon.icns" "${CONTENTS_DIR}/Resources/AppIcon.icns"
 fi
 
-swiftc -O -target arm64-apple-macos12.0 \
+swiftc -O -target "${TARGET}" \
   -F "${FRAMEWORKS_DIR}" \
   -I "${FW_DIR}/Headers" \
   -Xlinker -rpath -Xlinker @executable_path/../Frameworks \

@@ -4,6 +4,15 @@ import SceneKit
 import QuickLookUI
 import StepCADCore
 
+/// Vérification de test qui reste active en configuration -O (contrairement à assert).
+/// En cas d'échec, affiche le message et termine le processus avec le code 1.
+func check(_ cond: Bool, _ msg: String) {
+    guard cond else {
+        print("✗ \(msg)")
+        exit(1)
+    }
+}
+
 @main
 struct TestRunner {
     static func main() {
@@ -19,6 +28,8 @@ struct TestRunner {
             ("cylinder.step", SIMD3<Float>(30, 30, 50)),
             ("bracket.step", SIMD3<Float>(80, 50, 15))
         ]
+        // 3 modèles + 1 preview Quick Look + 1 test négatif
+        let expectedTests = testFiles.count + 2
 
         var totalPassed = 0
 
@@ -43,9 +54,9 @@ struct TestRunner {
                 print(String(format: "  • BBox      : %.1f × %.1f × %.1f mm", dims.x, dims.y, dims.z))
 
                 // Vérification des dimensions à 1% près
-                assert(abs(dims.x - expectedDims.x) < 1.0, "Dimension X inattendue: \(dims.x) vs \(expectedDims.x)")
-                assert(abs(dims.y - expectedDims.y) < 1.0, "Dimension Y inattendue: \(dims.y) vs \(expectedDims.y)")
-                assert(abs(dims.z - expectedDims.z) < 1.0, "Dimension Z inattendue: \(dims.z) vs \(expectedDims.z)")
+                check(abs(dims.x - expectedDims.x) < 1.0, "Dimension X inattendue pour \(fileName): \(dims.x) vs \(expectedDims.x)")
+                check(abs(dims.y - expectedDims.y) < 1.0, "Dimension Y inattendue pour \(fileName): \(dims.y) vs \(expectedDims.y)")
+                check(abs(dims.z - expectedDims.z) < 1.0, "Dimension Z inattendue pour \(fileName): \(dims.z) vs \(expectedDims.z)")
 
                 // 2. Test de conversion géométrie SceneKit
                 guard let geo = CADGeometryBuilder.buildGeometry(from: meshData, isWireframe: false) else {
@@ -65,25 +76,57 @@ struct TestRunner {
         let controller = PreviewViewController()
         controller.loadView()
 
-        let expectation = DispatchSemaphore(value: 0)
+        // Le handler est appelé sur la file principale : il faut faire tourner la run loop
+        // (un sémaphore bloquant le thread principal empêcherait son exécution).
+        var handlerCalled = false
         var previewError: Error?
 
         controller.preparePreviewOfFile(at: testURL) { error in
             previewError = error
-            expectation.signal()
+            handlerCalled = true
         }
 
-        _ = expectation.wait(timeout: .now() + 5.0)
-
-        if let err = previewError {
-            fatalError("Échec de préparation du preview: \(err)")
-        } else {
-            print("✓ PreviewViewController a préparé l'aperçu Quick Look avec succès sans erreur !")
-            totalPassed += 1
+        let deadline = Date().addingTimeInterval(10.0)
+        while !handlerCalled && Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.05))
         }
 
+        check(handlerCalled, "Délai dépassé (10 s) : le handler de preparePreviewOfFile n'a jamais été appelé")
+        check(previewError == nil, "Échec de préparation du preview: \(String(describing: previewError))")
+        print("✓ PreviewViewController a préparé l'aperçu Quick Look avec succès sans erreur !")
+        totalPassed += 1
+
+        // 4. Test négatif : un fichier non-STEP doit produire une erreur, pas un crash
+        print("\n--- Test négatif : fichier non-STEP ---")
+        let invalidURL = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("stepview_invalide_\(UUID().uuidString).step")
+        do {
+            try "Ceci n'est pas un fichier STEP.\n".write(to: invalidURL, atomically: true, encoding: .utf8)
+        } catch {
+            fatalError("Impossible de créer le fichier temporaire : \(error)")
+        }
+
+        var negativeError: Error?
+        do {
+            _ = try CADMeshBridge.loadStepMesh(from: invalidURL, linearDeflection: 0.0)
+        } catch {
+            negativeError = error
+        }
+        try? FileManager.default.removeItem(at: invalidURL)
+
+        check(negativeError != nil, "Un fichier non-STEP aurait dû faire échouer loadStepMesh, mais le chargement a réussi")
+        print("✓ Fichier non-STEP rejeté avec une erreur : \(negativeError?.localizedDescription ?? "")")
+        totalPassed += 1
+
+        // Bilan final : le code de sortie n'est 0 que si tous les tests sont passés
+        let allPassed = totalPassed == expectedTests
         print("\n==========================================================")
-        print("  ✓ Tous les \(totalPassed) tests ont RÉUSSI avec succès !")
+        if allPassed {
+            print("  ✓ Tous les \(totalPassed) tests ont RÉUSSI avec succès !")
+        } else {
+            print("  ✗ \(totalPassed) tests sur \(expectedTests) ont réussi")
+        }
         print("==========================================================")
+        exit(allPassed ? 0 : 1)
     }
 }

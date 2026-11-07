@@ -1,3 +1,9 @@
+// Conversion signal -> exception d'OCCT (SIGSEGV/SIGBUS/SIGFPE/SIGILL -> Standard_Failure) : sur Unix,
+// OCC_CONVERT_SIGNALS doit être défini avant les headers OCCT pour activer OCC_CATCH_SIGNALS (setjmp).
+#ifndef OCC_CONVERT_SIGNALS
+#define OCC_CONVERT_SIGNALS
+#endif
+
 #import "CADMeshBridge.h"
 
 #pragma clang diagnostic push
@@ -16,12 +22,20 @@
 #include <Bnd_Box.hxx>
 #include <Standard_ErrorHandler.hxx>
 #include <Standard_Failure.hxx>
+#include <OSD.hxx>
 
 #pragma clang diagnostic pop
 
 #include <vector>
 #include <cmath>
 #include <algorithm>
+#include <limits>
+
+static NSError *StepViewError(NSInteger code, NSString *message) {
+    return [NSError errorWithDomain:@"com.stepview.error"
+                               code:code
+                           userInfo:@{NSLocalizedDescriptionKey: message}];
+}
 
 @implementation CADMeshData
 
@@ -48,11 +62,13 @@
 
 @end
 
-@implementation CADMeshBridge
+static CADMeshData *LoadStepMesh(NSURL *fileURL, double linearDeflection, NSUInteger maxTriangles,
+                                 NSError * __strong *outError) {
+    // Active une seule fois la conversion des signaux fatals en exceptions OCCT (process-wide).
+    // FPE désactivés (Standard_False) : seuls les accès mémoire invalides / instructions illégales sont convertis.
+    static dispatch_once_t signalOnce;
+    dispatch_once(&signalOnce, ^{ OSD::SetSignal(Standard_False); });
 
-+ (nullable CADMeshData *)loadStepMeshFromURL:(NSURL *)fileURL
-                            linearDeflection:(double)linearDeflection
-                                       error:(NSError * _Nullable * _Nullable)outError {
     @autoreleasepool {
         if (!fileURL || !fileURL.isFileURL) {
             if (outError) {
@@ -74,6 +90,8 @@
         }
 
         try {
+            OCC_CATCH_SIGNALS  // setjmp : un signal fatal dans OCCT (même thread) est relancé en Standard_Failure
+
             // 1. Lecture du fichier STEP
             STEPControl_Reader reader;
             IFSelect_ReturnStatus status = reader.ReadFile(filePath);
@@ -110,7 +128,10 @@
 
             // 4. Tessellation adaptative (LOD automatique pour préserver la RAM)
             double deflection = linearDeflection;
-            if (deflection <= 0.0) {
+            if (deflection < 0.0) {
+                // Valeur négative : fraction de la diagonale (ex. -0.005 = 0.5%), utile pour un LOD plus grossier
+                deflection = std::max(static_cast<double>(diagonal) * -deflection, 0.0005);
+            } else if (deflection == 0.0) {
                 // Règle ergonomique : 0.2% de la diagonale, avec garde-fous
                 deflection = std::max(static_cast<double>(diagonal * 0.002f), 0.0005);
             }
@@ -123,7 +144,8 @@
             std::vector<simd_float3> allNormals;
             std::vector<uint32_t> allIndices;
 
-            uint32_t vertexOffset = 0;
+            uint64_t vertexOffset = 0;
+            uint64_t totalTriangles = 0;
 
             // 5. Extraction de toutes les faces B-Rep
             for (TopExp_Explorer faceExp(shape, TopAbs_FACE); faceExp.More(); faceExp.Next()) {
@@ -141,6 +163,23 @@
 
                 if (nbNodes == 0 || nbTriangles == 0) {
                     continue;
+                }
+
+                // Garde-fous : plafond de triangles (mémoire) et indices 32 bits
+                totalTriangles += static_cast<uint64_t>(nbTriangles);
+                if (maxTriangles > 0 && totalTriangles > maxTriangles) {
+                    if (outError) {
+                        *outError = StepViewError(1006, [NSString stringWithFormat:
+                            @"Modèle trop complexe (plus de %lu triangles) pour cet aperçu. Ouvrez-le dans StepView.",
+                            (unsigned long)maxTriangles]);
+                    }
+                    return nil;
+                }
+                if (vertexOffset + static_cast<uint64_t>(nbNodes) > std::numeric_limits<uint32_t>::max()) {
+                    if (outError) {
+                        *outError = StepViewError(1007, @"Modèle trop volumineux : nombre de sommets supérieur à la limite (2^32).");
+                    }
+                    return nil;
                 }
 
                 bool isReversed = (face.Orientation() == TopAbs_REVERSED);
@@ -215,12 +254,12 @@
 
                 // Intégration dans le maillage global avec offset
                 for (auto idx : faceIndices) {
-                    allIndices.push_back(vertexOffset + idx);
+                    allIndices.push_back(static_cast<uint32_t>(vertexOffset) + idx);
                 }
                 allVertices.insert(allVertices.end(), faceVertices.begin(), faceVertices.end());
                 allNormals.insert(allNormals.end(), faceNormals.begin(), faceNormals.end());
 
-                vertexOffset += static_cast<uint32_t>(nbNodes);
+                vertexOffset += static_cast<uint64_t>(nbNodes);
             }
 
             // Libération de la mémoire OCCT
@@ -269,6 +308,32 @@
             return nil;
         }
     }
+}
+
+@implementation CADMeshBridge
+
++ (nullable CADMeshData *)loadStepMeshFromURL:(NSURL *)fileURL
+                            linearDeflection:(double)linearDeflection
+                                       error:(NSError * _Nullable * _Nullable)outError {
+    // Comportement historique : déflexion <= 0 = adaptative par défaut, pas de plafond de triangles.
+    return [self loadStepMeshFromURL:fileURL
+                    linearDeflection:std::max(linearDeflection, 0.0)
+                        maxTriangles:0
+                               error:outError];
+}
+
++ (nullable CADMeshData *)loadStepMeshFromURL:(NSURL *)fileURL
+                            linearDeflection:(double)linearDeflection
+                                maxTriangles:(NSUInteger)maxTriangles
+                                       error:(NSError * _Nullable * _Nullable)outError {
+    // L'erreur est écrite hors de l'@autoreleasepool de LoadStepMesh : sinon l'NSError autoreleased
+    // serait libéré à la sortie du pool et l'appelant lirait un pointeur invalide.
+    NSError *strongError = nil;
+    CADMeshData *result = LoadStepMesh(fileURL, linearDeflection, maxTriangles, &strongError);
+    if (!result && outError) {
+        *outError = strongError;
+    }
+    return result;
 }
 
 @end

@@ -138,7 +138,10 @@ public final class CADSceneView: SCNView {
         let extents = bMax - bMin
         let radius = simd_length(extents) * 0.5
 
-        // Centrage du modèle à l'origine locale
+        // Conversion CAO Z-up -> SceneKit Y-up : rotation propre de -90° autour de X (det +1)
+        modelPivotNode.eulerAngles = SCNVector3(-CGFloat.pi / 2.0, 0, 0)
+
+        // Centrage du modèle à l'origine locale (repère CAO du pivot)
         newMeshNode.position = SCNVector3(-center.x, -center.y, -center.z)
 
         // Plan de sol receveur d'ombres
@@ -153,8 +156,8 @@ public final class CADSceneView: SCNView {
         groundGeo.materials = [groundMat]
 
         let ground = SCNNode(geometry: groundGeo)
-        ground.eulerAngles = SCNVector3(-CGFloat.pi / 2.0, 0, 0)
-        ground.position = SCNVector3(0, -extents.y * 0.5 - (radius * 0.01), 0)
+        // Repère du pivot (Z-up) : le plan SCNPlane (normale +Z) est déjà horizontal, posé sous la hauteur CAO
+        ground.position = SCNVector3(0, 0, -extents.z * 0.5 - (radius * 0.01))
         modelPivotNode.addChildNode(ground)
         self.groundPlaneNode = ground
 
